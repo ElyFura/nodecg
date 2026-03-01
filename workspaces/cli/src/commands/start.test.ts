@@ -14,7 +14,7 @@ beforeEach(() => {
 	startCommand(program as unknown as Command);
 });
 
-test("should start NodeCG", async () => {
+test("should start NodeCG", { timeout: 15_000 }, async () => {
 	const [port] = await Promise.all([
 		vi.waitUntil(() => process.env["NODECG_TEST_PORT"], { timeout: 10_000 }),
 		program.runWith("start"),

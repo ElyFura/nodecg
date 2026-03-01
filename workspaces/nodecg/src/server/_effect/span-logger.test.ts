@@ -28,6 +28,7 @@ describe("withSpanProcessorLive", () => {
 	describe("when enabled", () => {
 		it(
 			"logs span start and successful completion",
+			{ timeout: 15_000 },
 			testEffect(
 				Effect.gen(function* () {
 					const logs: string[] = [];

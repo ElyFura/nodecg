@@ -134,20 +134,6 @@ export class BundleManager extends Effect.Service<BundleManager>()(
 				}
 			});
 
-			const watcher = yield* getWatcher(watchPaths, {
-				persistent: true,
-				ignoreInitial: true,
-				followSymlinks: true,
-				ignored: [
-					/\/.+___jb_.+___/, // Ignore temp files created by JetBrains IDEs
-					/\/node_modules\//, // Ignore node_modules folders
-					/\/bower_components\//, // Ignore bower_components folders
-					/\/.+\.lock/, // Ignore lockfiles
-				],
-			});
-
-			yield* waitForReady(watcher);
-
 			for (const { bundlePath, bundleName } of discoveredBundles) {
 				log.debug(`Loading bundle ${bundleName}`);
 
@@ -174,77 +160,96 @@ export class BundleManager extends Effect.Service<BundleManager>()(
 				bundles.push(bundle);
 			}
 
-			const addStream = yield* listenToAdd(watcher);
-			const changeStream = yield* listenToChange(watcher);
-			const unlinkStream = yield* listenToUnlink(watcher);
-			type StreamEvent = Stream.Stream.Success<
-				typeof addStream | typeof changeStream | typeof unlinkStream
-			>;
-			const fileChangeHandler = Stream.mergeAll<StreamEvent, never, never>(
-				[addStream, changeStream, unlinkStream],
-				{ concurrency: "unbounded" },
-			).pipe(
-				Stream.filterMap(({ path: filePath, _tag }) => {
-					const bundleName = findBundleName(bundleRootPaths, filePath);
-					if (!bundleName) {
-						return Option.none();
-					}
-					const bundle = find(bundleName);
-					if (!bundle) {
-						return Option.none();
-					}
-					return Option.some({ _tag, bundleName, filePath, bundle });
-				}),
-				Stream.groupByKey(({ bundleName }) => bundleName),
-				GroupBy.evaluate((_, stream) =>
-					stream.pipe(
-						Stream.groupByKey(({ _tag, bundleName, filePath }) => {
-							if (_tag === "change" && isManifest(bundleName, filePath)) {
-								return "parseBundle";
-							}
-							if (isPanelHTMLFile(bundleName, filePath)) {
-								return "parseBundle";
-							}
-							if (isGitData(bundleName, filePath)) {
-								return "parseGit";
-							}
-							return "noop";
-						}),
-						GroupBy.evaluate((key, stream) => {
-							return Match.value(key).pipe(
-								Match.when("parseBundle", () =>
-									stream.pipe(
-										Stream.debounce(Duration.millis(500)),
-										Stream.mapEffect(({ bundle }) =>
-											parseBundleAndEmit(bundle),
+			// chokidar.watch([]) never fires "ready", so skip watcher when there are no paths
+			if (watchPaths.length > 0) {
+				const watcher = yield* getWatcher(watchPaths, {
+					persistent: true,
+					ignoreInitial: true,
+					followSymlinks: true,
+					ignored: [
+						/\/.+___jb_.+___/, // Ignore temp files created by JetBrains IDEs
+						/\/node_modules\//, // Ignore node_modules folders
+						/\/bower_components\//, // Ignore bower_components folders
+						/\/.+\.lock/, // Ignore lockfiles
+					],
+				});
+
+				yield* waitForReady(watcher);
+
+				const addStream = yield* listenToAdd(watcher);
+				const changeStream = yield* listenToChange(watcher);
+				const unlinkStream = yield* listenToUnlink(watcher);
+				type StreamEvent = Stream.Stream.Success<
+					typeof addStream | typeof changeStream | typeof unlinkStream
+				>;
+				const fileChangeHandler = Stream.mergeAll<StreamEvent, never, never>(
+					[addStream, changeStream, unlinkStream],
+					{ concurrency: "unbounded" },
+				).pipe(
+					Stream.filterMap(({ path: filePath, _tag }) => {
+						const bundleName = findBundleName(bundleRootPaths, filePath);
+						if (!bundleName) {
+							return Option.none();
+						}
+						const bundle = find(bundleName);
+						if (!bundle) {
+							return Option.none();
+						}
+						return Option.some({ _tag, bundleName, filePath, bundle });
+					}),
+					Stream.groupByKey(({ bundleName }) => bundleName),
+					GroupBy.evaluate((_, stream) =>
+						stream.pipe(
+							Stream.groupByKey(({ _tag, bundleName, filePath }) => {
+								if (_tag === "change" && isManifest(bundleName, filePath)) {
+									return "parseBundle";
+								}
+								if (isPanelHTMLFile(bundleName, filePath)) {
+									return "parseBundle";
+								}
+								if (isGitData(bundleName, filePath)) {
+									return "parseGit";
+								}
+								return "noop";
+							}),
+							GroupBy.evaluate((key, stream) => {
+								return Match.value(key).pipe(
+									Match.when("parseBundle", () =>
+										stream.pipe(
+											Stream.debounce(Duration.millis(500)),
+											Stream.mapEffect(({ bundle }) =>
+												parseBundleAndEmit(bundle),
+											),
 										),
 									),
-								),
-								Match.when("parseGit", () =>
-									stream.pipe(
-										Stream.debounce(Duration.millis(250)),
-										Stream.mapEffect(({ bundle }) => gitChangeHandler(bundle)),
+									Match.when("parseGit", () =>
+										stream.pipe(
+											Stream.debounce(Duration.millis(250)),
+											Stream.mapEffect(({ bundle }) =>
+												gitChangeHandler(bundle),
+											),
+										),
 									),
-								),
-								Match.when("noop", () => Stream.void),
-								Match.exhaustive,
-							);
-						}),
+									Match.when("noop", () => Stream.void),
+									Match.exhaustive,
+								);
+							}),
+						),
 					),
-				),
-			);
-			yield* Effect.forkScoped(fileChangeHandler.pipe(Stream.runDrain));
+				);
+				yield* Effect.forkScoped(fileChangeHandler.pipe(Stream.runDrain));
 
-			const errorStream = yield* listenToError(watcher);
-			yield* Effect.forkScoped(
-				errorStream.pipe(
-					Stream.tap(({ error }) => {
-						log.error((error as Error).stack);
-						return Effect.void;
-					}),
-					Stream.runDrain,
-				),
-			);
+				const errorStream = yield* listenToError(watcher);
+				yield* Effect.forkScoped(
+					errorStream.pipe(
+						Stream.tap(({ error }) => {
+							log.error((error as Error).stack);
+							return Effect.void;
+						}),
+						Stream.runDrain,
+					),
+				);
+			}
 
 			/**
 			 * Returns a shallow-cloned array of all currently active bundles.

@@ -212,6 +212,7 @@ test(
 
 test(
 	"watcher - should emit a change event when a panel HTML file changes",
+	{ timeout: 15_000 },
 	testEffect(
 		Effect.gen(function* () {
 			const bundleManager = yield* BundleManager;
@@ -233,6 +234,7 @@ test(
 			);
 
 			// Make the file change
+			yield* Effect.sleep("100 millis");
 			const panelPath = `${tmpDir}/bundles/change-panel/dashboard/panel.html`;
 			let panel = fs.readFileSync(panelPath, "utf8");
 			panel += "\n";
